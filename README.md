@@ -1,5 +1,12 @@
-# NVIDIA AI Chat
+# AI Agent
 
-Live: https://fluffy-vacherin-f70735.netlify.app
+Claude-style AI Agent with:
+- 🔀 LangGraph Router (python_tool / rag / web_search / direct)
+- 🔧 MCP Python Tool execution
+- 📄 RAG Document Q&A
+- 🌐 Web Search
+- 💾 Chat History
 
-Powered by NVIDIA Integrate API
+## Stack
+- Frontend: Vanilla HTML/CSS/JS
+- Backend: FastAPI + LangGraph + MCP
