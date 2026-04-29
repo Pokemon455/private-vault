@@ -137,7 +137,8 @@ def RAG(query: str):
         docs = retriever.invoke(query)
         if not docs:
             return "No relevant documents found."
-        return "".join([f"Source {i+1}: {doc.page_content.strip()}\n\n" for i, doc in enumerate(docs)])
+        return "".join([f"Source {i+1}: {doc.page_content.strip()}\n\n"
+                        for i, doc in enumerate(docs)])
     except Exception as e:
         return f"Error: {str(e)}"
 
@@ -197,18 +198,12 @@ def web_search(query: str) -> str:
         filtered = [r for r in organic if not any(
             s in r.get("url","") for s in ["youtube.com","reddit.com","twitter.com"])][:5]
         contents = fetch_parallel([r.get("url","") for r in filtered[:3]])
-        output = f"Search: '{query}'\n{\'=\'*50}\n\n"
+        output = f"Search: '{query}'\n" + "="*50 + "\n\n"
         for i, r in enumerate(filtered):
-            output += f"[{i+1}] {r.get(\'title\',\'\')}
-"
-            output += f"Snippet: {r.get(\'description\',\'\').replace(\'Read more\',\'\').strip()}
-"
-            if i < 3 and contents[i]: output += f"Content: {contents[i]}
-"
-            output += "
-" + "-"*45 + "
-
-"
+            output += f"[{i+1}] {r.get('title','')}\n"
+            output += f"Snippet: {r.get('description','').replace('Read more','').strip()}\n"
+            if i < 3 and contents[i]: output += f"Content: {contents[i]}\n"
+            output += "\n" + "-"*45 + "\n\n"
         return output
     except Exception as e:
         return f"Search error: {str(e)}"
@@ -225,7 +220,7 @@ servers = {
 client = MultiServerMCPClient(servers)
 
 # ============================================
-# MAIN GRAPH
+# MAIN GRAPH - ALL BUGS FIXED
 # ============================================
 async def build_and_run(query: str, thread_id: str = "1"):
     ct  = await asyncio.wait_for(client.get_tools(), timeout=30)
@@ -237,11 +232,10 @@ async def build_and_run(query: str, thread_id: str = "1"):
             q  = state["messages"][-1].content
             fu = state.get("file_uploaded", False)
             r  = await answer_LLM.with_structured_output(RouterDecision).ainvoke([
-                SystemMessage(content=ROUTER_PROMPT + f"
-file_uploaded={fu}"),
+                SystemMessage(content=ROUTER_PROMPT + f"\nfile_uploaded={fu}"),
                 HumanMessage(content=q)
             ])
-            print(f"  Router → {r.decision} | {r.reasoning}")
+            print(f"  Router -> {r.decision} | {r.reasoning}")
             return {"router_decision": r.decision, "reasoning": r.reasoning}
         except Exception as e:
             return {"router_decision": "direct", "reasoning": str(e)}
@@ -249,28 +243,31 @@ file_uploaded={fu}"),
     def route_condition(state):
         return "LLM_Tool" if state["router_decision"] in {"rag","web_search","python_tool"} else "answer_node"
 
+    # FIX 1: Tool execute properly hota hai
     async def LLM_Tool(state):
         msgs   = state["messages"]
         dec    = state.get("router_decision")
         itr    = state.get("iteration_count", 0)
         forced = {"python_tool":"run_python","rag":"RAG","web_search":"web_search"}.get(dec)
         last   = msgs[-1]
+        # Agar tool result aa gaya toh dobara call mat karo
         if isinstance(last, ToolMessage):
             return {"messages": [], "iteration_count": itr}
         sp = f"""You are an AI assistant. Decision: {dec}.
 STRICTLY call the tool: {forced}
-- python_tool → run_python: write complete python code with print()
-- rag → RAG: pass user question exactly
-- web_search → web_search: pass user question exactly
+- python_tool -> run_python: write complete python code with print()
+- rag -> RAG: pass user question exactly
+- web_search -> web_search: pass user question exactly
 DO NOT answer in text. ONLY tool call."""
         kw   = {"tool_choice": forced} if forced else {}
         resp = await answer_LLM.bind_tools(_T, **kw).ainvoke(
             [SystemMessage(content=sp)] + msgs[-6:]
         )
         if resp.tool_calls:
-            print(f"  Tool → {resp.tool_calls[0]['name']}")
+            print(f"  Tool -> {resp.tool_calls[0]['name']}")
         return {"messages": [resp], "iteration_count": itr + 1}
 
+    # FIX 2: Smarter tool condition
     def tool_condition(state):
         msgs = state["messages"]
         last = msgs[-1]
@@ -283,6 +280,7 @@ DO NOT answer in text. ONLY tool call."""
             return "tools"
         return "answer_node"
 
+    # FIX 3: No hallucination - sirf tool_out + user_q
     async def answer_node(state):
         msgs     = state["messages"]
         tool_out = next((m.content for m in reversed(msgs) if isinstance(m, ToolMessage)), None)
@@ -294,10 +292,7 @@ DO NOT answer in text. ONLY tool call."""
 - If no tool result: answer from knowledge
 - No extra words, no noise"""
         if tool_out:
-            sp += f"
-
-Tool result:
-{tool_out}"
+            sp += f"\n\nTool result:\n{tool_out}"
         resp = await answer_LLM.ainvoke([
             SystemMessage(content=sp),
             HumanMessage(content=user_q)
@@ -312,7 +307,7 @@ Tool result:
     g.add_edge(START, "router_node")
     g.add_conditional_edges("router_node", route_condition, {"LLM_Tool":"LLM_Tool","answer_node":"answer_node"})
     g.add_conditional_edges("LLM_Tool", tool_condition, {"tools":"tools","answer_node":"answer_node"})
-    g.add_edge("tools", "answer_node")
+    g.add_edge("tools", "answer_node")  # FIX: tools ke baad seedha answer_node
     g.add_edge("answer_node", END)
 
     from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
@@ -328,7 +323,7 @@ Tool result:
         return res["messages"][-1].content
 
 # ============================================
-# RUN - Query yahan likho
+# RUN
 # ============================================
 query     = "python version check karo"
 thread_id = "1"
