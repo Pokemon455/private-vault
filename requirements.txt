@@ -1,0 +1,37 @@
+# LangChain Ecosystem
+langchain>=0.3.0
+langchain-core>=0.3.0
+langchain-openai>=0.3.0
+langchain-community>=0.3.0
+langchain-text-splitters>=0.3.0
+langchain-pinecone>=0.2.0
+langchain-huggingface>=0.1.0
+langchain-mcp-adapters>=0.2.0
+langchain-tavily>=0.2.0
+
+# LangGraph
+langgraph>=0.3.0
+langgraph-checkpoint-postgres>=3.0.0
+
+# Vector DB
+pinecone>=7.0.0
+
+# Database
+psycopg[binary]>=3.0.0
+psycopg2-binary>=2.9.0
+
+# LLM / AI
+openai>=1.0.0
+
+# Document Loaders
+pypdf>=4.0.0
+docx2txt>=0.8
+rank-bm25>=0.2.2
+
+# Web Search
+requests>=2.31.0
+
+# Utilities
+nest-asyncio>=1.6.0
+pydantic>=2.0.0
+python-dotenv>=1.0.0
