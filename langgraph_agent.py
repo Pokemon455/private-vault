@@ -40,6 +40,14 @@ answer_LLM = ChatOpenAI(
     model="openai/gpt-oss-20b"
 )
 
+# Strict router LLM - temperature=0 for consistent routing
+router_LLM = ChatOpenAI(
+    base_url="https://integrate.api.nvidia.com/v1",
+    api_key="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",
+    model="openai/gpt-oss-20b",
+    temperature=0
+)
+
 # ============================================
 # MOCK EMBEDDINGS (no download needed)
 # ============================================
@@ -74,13 +82,14 @@ bm25_retriever = None
 # ============================================
 ROUTER_PROMPT = """You are a routing assistant. Classify query into one of:
 - python_tool: code, python, packages, install, pip, version, environment, libraries, frameworks, "karo", "check karo", "chalao"
-- rag: user uploaded a file, asking about document content
-- web_search: news, weather, latest/newest/current/recent/today/aaj, real-time info, newest model/version/release
+- rag: user is asking about content inside an uploaded file. Keywords: "document", "file", "PDF", "report", "meri report", "is file mein", "uploaded", "mera data", "sheet", "spreadsheet"
+- web_search: news, weather, latest/newest/current/recent/today/aaj, real-time info, newest model/version/release, future release dates, "kab release hoga", "kab aayega", price, stock
 - direct: general knowledge, definitions, greetings, simple questions (NO code, NO file, NO real-time)
 
 Rules:
 - Any technical/code intent → python_tool
-- "latest", "newest", "current" product/model → web_search
+- "latest", "newest", "current", "kab release hoga", "kab aayega" → web_search
+- ANY mention of "report", "file", "document", "PDF", "sheet" → rag
 - Doubt between python_tool vs direct → python_tool
 """
 
@@ -231,7 +240,7 @@ async def build_and_run(query: str, thread_id: str = "1"):
         try:
             q  = state["messages"][-1].content
             fu = state.get("file_uploaded", False)
-            r  = await answer_LLM.with_structured_output(RouterDecision).ainvoke([
+            r  = await router_LLM.with_structured_output(RouterDecision).ainvoke([
                 SystemMessage(content=ROUTER_PROMPT + f"\nfile_uploaded={fu}"),
                 HumanMessage(content=q)
             ])
