@@ -226,7 +226,9 @@ DO NOT answer in text. ONLY make a tool call."""
 - No filler words, no unnecessary repetition"""
         if tool_out:
             sp += f"\n\nTool result:\n{tool_out}"
-        resp = await answer_LLM.ainvoke([SystemMessage(content=sp), HumanMessage(content=user_q)])
+        # Last 6 messages pass karo — conversation history ke liye
+        history = [m for m in msgs[-6:] if not isinstance(m, ToolMessage)]
+        resp = await answer_LLM.ainvoke([SystemMessage(content=sp)] + history)
         return {"messages": [resp]}
 
     g = StateGraph(State)
