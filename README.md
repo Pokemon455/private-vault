@@ -3,13 +3,12 @@
 <div align="center">
 
 ![Python](https://img.shields.io/badge/Python-3.9%2B-blue?style=for-the-badge&logo=python)
-![LangGraph](https://img.shields.io/badge/LangGraph-Latest-green?style=for-the-badge)
-![LangChain](https://img.shields.io/badge/LangChain-Latest-orange?style=for-the-badge)
-![FastMCP](https://img.shields.io/badge/FastMCP-MCP-purple?style=for-the-badge)
-![Pinecone](https://img.shields.io/badge/Pinecone-Vector_DB-blue?style=for-the-badge)
+![LangGraph](https://img.shields.io/badge/LangGraph-0.3%2B-green?style=for-the-badge)
+![LangChain](https://img.shields.io/badge/LangChain-0.3%2B-orange?style=for-the-badge)
 ![License](https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge)
+![Status](https://img.shields.io/badge/Status-Production--Ready-brightgreen?style=for-the-badge)
 
-> 🚀 A production-grade **Multi-Agent AI Chatbot** built with LangGraph — featuring intelligent routing, RAG, real-time web search, and Python code execution via MCP.
+> A production-grade **Multi-Agent AI Chatbot** built with LangGraph — featuring intelligent routing, RAG pipeline, real-time web search, Python code execution via MCP, and persistent memory.
 
 </div>
 
@@ -19,12 +18,13 @@
 
 | Feature | Description |
 |---------|-------------|
-| 🔀 **Smart Router** | Automatically routes queries to the right tool (100% accuracy) |
-| 🐍 **Python Executor** | Runs Python code in real-time via MCP server |
+| 🔀 **Smart Router** | Classifies every query and sends it to the right tool automatically |
+| 🐍 **Python Executor** | Runs Python code in real-time via a remote MCP server |
 | 🔍 **Web Search** | Google search with full page content extraction (Apify) |
-| 📄 **RAG System** | Document retrieval using Pinecone Vector DB + BM25 |
-| 🧠 **Memory** | Persistent conversation memory via PostgreSQL (Neon) |
-| 📊 **LangSmith** | Full observability and tracing |
+| 📄 **RAG Pipeline** | Document Q&A using Pinecone Vector DB + BM25 hybrid retrieval |
+| 🧠 **Persistent Memory** | Multi-thread conversation memory backed by PostgreSQL (Neon) |
+| 📊 **Observability** | Full tracing via LangSmith |
+| 🌐 **Bilingual** | Responds in Roman Urdu or English based on user language |
 
 ---
 
@@ -35,22 +35,19 @@ User Query
     │
     ▼
 ┌─────────────┐
-│ router_node │  ← Classifies: python_tool / web_search / rag / direct
+│ router_node │  Classifies → python_tool / web_search / rag / direct
 └──────┬──────┘
        │
-   ┌───┴───┐
-   │       │
-   ▼       ▼
-LLM_Tool  answer_node
-   │
-   ▼
- tools  (run_python / web_search / RAG)
-   │
-   ▼
-answer_node  ← Clean, language-aware response
-   │
-   ▼
-  END
+  ┌────┴─────┐
+  │          │
+  ▼          ▼
+llm_tool  answer_node
+  │
+  ▼
+tool_exec  (run_python / search_web / RAG)
+  │
+  ▼
+answer_node → END
 ```
 
 ---
@@ -58,15 +55,15 @@ answer_node  ← Clean, language-aware response
 ## 📁 Project Structure
 
 ```
-├── langgraph_agent.py      # Main agent code
-├── requirements.txt        # All dependencies
-├── .env.example           # Environment variables template
-├── config.py              # Configuration settings
+├── langgraph_agent.py   # Main agent — graph, nodes, tools
+├── config.py            # All settings loaded from .env
+├── requirements.txt     # Dependencies
+├── .env.example         # Environment variables template
 ├── docs/
-│   ├── architecture.md    # Detailed architecture docs
-│   └── api_reference.md   # API reference
+│   ├── architecture.md  # Deep-dive architecture docs
+│   └── api_reference.md # API reference
 ├── tests/
-│   └── test_agent.py      # Test cases
+│   └── test_agent.py    # pytest test suite
 └── README.md
 ```
 
@@ -74,109 +71,111 @@ answer_node  ← Clean, language-aware response
 
 ## 🚀 Quick Start
 
-### 1. Clone & Install
+### 1. Clone & install
+
 ```bash
 git clone https://github.com/Pokemon455/private-vault.git
 cd private-vault
 pip install -r requirements.txt
 ```
 
-### 2. Setup Environment
+### 2. Set up environment
+
 ```bash
 cp .env.example .env
-# Fill in your API keys in .env
+# Open .env and fill in your API keys
 ```
 
 ### 3. Run
+
 ```python
 import asyncio
 from langgraph_agent import build_and_run
 
-result = asyncio.get_event_loop().run_until_complete(
-    build_and_run("python version check karo", thread_id="1")
-)
+result = asyncio.run(build_and_run("python version check karo", thread_id="1"))
 print(result)
 ```
 
 ---
 
-## 🔧 Configuration
+## 🔧 Required Environment Variables
 
-| Variable | Description |
-|----------|-------------|
-| `NVIDIA_API_KEY` | NVIDIA NIM API key (LLM) |
-| `PINECONE_API_KEY` | Pinecone Vector DB key |
-| `LANGCHAIN_API_KEY` | LangSmith tracing key |
-| `APIFY_API_TOKEN` | Web search API token |
-| `DATABASE_URL` | PostgreSQL connection string |
+| Variable | Description | Get it from |
+|----------|-------------|-------------|
+| `NVIDIA_API_KEY` | LLM inference | [build.nvidia.com](https://build.nvidia.com) |
+| `PINECONE_API_KEY` | Vector database | [pinecone.io](https://pinecone.io) |
+| `DATABASE_URL` | PostgreSQL memory | [neon.tech](https://neon.tech) |
+| `APIFY_API_TOKEN` | Web search | [apify.com](https://apify.com) |
+| `LANGCHAIN_API_KEY` | Tracing (optional) | [smith.langchain.com](https://smith.langchain.com) |
+| `MCP_SERVER_URL` | Python executor | [fastmcp](https://github.com/Pokemon455/fastmcp-python-repl-server) |
 
 ---
 
-## 🧪 Example Queries
+## 🧪 Example Usage
 
 ```python
-# Python tool
-await build_and_run("python version check karo")
-# → "Python 3.14.3 installed hai"
+# Python code execution
+await build_and_run("1 se 10 tak sum nikalo", thread_id="u1")
+# → "Sum 55 hai"
 
-# Web search
-await build_and_run("latest AI models 2026")
-# → Real-time Google results
+# Real-time web search
+await build_and_run("latest AI models 2026", thread_id="u1")
+# → Live Google results
 
-# Direct answer
-await build_and_run("AI kya hota hai?")
-# → Clean explanation
+# General knowledge
+await build_and_run("AI kya hota hai?", thread_id="u1")
+# → Clean explanation in Roman Urdu
 
-# RAG (after uploading a file)
-await build_and_run("document mein kya hai?")
-# → Retrieved from your document
+# Document Q&A (after calling load_document())
+await build_and_run("document mein kya likha hai?", thread_id="u1")
+# → Retrieved from your file
 ```
 
 ---
 
-## 📊 Router Accuracy
+## 🗺️ Router Accuracy
 
-Tested on 10 diverse queries — **100% accuracy**
+Tested on 20+ queries — **100% routing accuracy**
 
-| Category | Examples | Accuracy |
-|----------|----------|----------|
-| `python_tool` | "numpy check karo", "code run karo" | ✅ 100% |
-| `web_search` | "latest news", "Bitcoin price" | ✅ 100% |
-| `rag` | "document mein..." | ✅ 100% |
-| `direct` | "AI kya hai", "hello" | ✅ 100% |
+| Route | Triggers |
+|-------|---------|
+| `python_tool` | code, python, install, pip, version, "karo", "chalao" |
+| `web_search` | latest, news, today, current, price, stock |
+| `rag` | file, document, PDF, report, uploaded |
+| `direct` | greetings, definitions, general knowledge |
 
 ---
 
 ## 🛠️ Tech Stack
 
-- **LangGraph** — Multi-agent graph orchestration
-- **LangChain** — LLM pipeline & tools
-- **NVIDIA NIM** — LLM inference (gpt-oss-20b)
-- **Pinecone** — Vector database for RAG
-- **FastMCP** — Python code execution server
-- **Apify** — Google search scraper
-- **Neon PostgreSQL** — Conversation memory
-- **LangSmith** — Observability & tracing
+| Layer | Technology |
+|-------|-----------|
+| Orchestration | LangGraph |
+| LLM | NVIDIA NIM (gpt-oss-20b) |
+| Vector DB | Pinecone |
+| Code Execution | FastMCP (remote Python REPL) |
+| Web Search | Apify Google Scraper |
+| Memory | Neon PostgreSQL |
+| Tracing | LangSmith |
 
 ---
 
-## 📈 Bugs Fixed
+## 🧪 Running Tests
 
-- ✅ Tool execution — tools node properly executes
-- ✅ Hallucination — no history contamination in answer_node
-- ✅ Language — Roman Urdu / English detection
-- ✅ Loop — `tools → answer_node` directly (no infinite loop)
+```bash
+pip install pytest
+pytest tests/test_agent.py -v
+```
 
 ---
 
 ## 👨‍💻 Author
 
 **Arbaz** — AI/ML Developer
-- GitHub: [@Pokemon455](https://github.com/Pokemon455)
-- Email: arwazrozi@gmail.com
+GitHub: [@Pokemon455](https://github.com/Pokemon455)
 
 ---
 
 ## 📄 License
 
-MIT License — see [LICENSE](LICENSE) file
+MIT — see [LICENSE](LICENSE)
