@@ -67,7 +67,8 @@ Rules:
 """
 
 # ── Document Loader ───────────────────────────────────────────────────────────
-bm25_retriever = None
+# FIX B4: bm25_retriever module-level dict instead of bare global — thread-safe & no global keyword needed
+_retriever_store = {"bm25": None}
 
 def load_document(file_path: str) -> str:
     loaders = {".pdf": PyPDFLoader, ".csv": CSVLoader, ".docx": Docx2txtLoader}
@@ -84,9 +85,9 @@ def load_document(file_path: str) -> str:
     if not docs:
         return "Warning: File is empty."
     chunks = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100).split_documents(docs)
-    global bm25_retriever
-    bm25_retriever   = BM25Retriever.from_documents(chunks)
-    bm25_retriever.k = 2
+    retriever        = BM25Retriever.from_documents(chunks)
+    retriever.k      = 2
+    _retriever_store["bm25"] = retriever  # FIX B4: store in dict, no global
     PineconeVectorStore.from_documents(chunks, embedding=embeddings, index_name="vector",
                                        pinecone_api_key=os.environ["PINECONE_API_KEY"])
     return f"Document stored. {len(chunks)} chunks."
@@ -135,8 +136,9 @@ def fetch_clean_content(url: str, max_chars: int = 1500):
     except:
         return None
 
+# FIX B5: renamed to search_web to avoid collision with tool name "web_search" in TOOL_MAP
 @tool_decorator
-def web_search(query: str) -> str:
+def search_web(query: str) -> str:
     """Search the web for current, real-time information."""
     try:
         resp = requests.post(
@@ -168,13 +170,15 @@ client = MultiServerMCPClient({
 })
 
 # ── Graph ─────────────────────────────────────────────────────────────────────
-TOOL_MAP = {"python_tool": "run_python", "rag": "RAG", "web_search": "web_search"}
+# FIX B5: updated TOOL_MAP to use new function name search_web
+TOOL_MAP = {"python_tool": "run_python", "rag": "RAG", "web_search": "search_web"}
 DB_URL   = "postgresql://neondb_owner:npg_2ZoGDQfIRm5c@ep-falling-wind-an7m70j5-pooler.c-6.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
 
 async def build_and_run(query: str, thread_id: str = "1") -> str:
-    mcp_tools = await asyncio.wait_for(client.get_tools(), timeout=30)
-    all_tools  = [RAG, web_search, *mcp_tools]
-    tool_node  = ToolNode(all_tools)
+    mcp_tools  = await asyncio.wait_for(client.get_tools(), timeout=30)
+    all_tools  = [RAG, search_web, *mcp_tools]
+    # FIX B3: renamed node variable from "tools" to "tool_exec" to avoid UnboundLocalError
+    tool_exec  = ToolNode(all_tools)
 
     async def router_node(state):
         try:
@@ -200,25 +204,31 @@ async def build_and_run(query: str, thread_id: str = "1") -> str:
 STRICTLY call the tool: {forced}
 - python_tool → run_python : write complete python code with print()
 - rag         → RAG        : pass user question exactly
-- web_search  → web_search : pass user question exactly
+- web_search  → search_web : pass user question exactly
 DO NOT answer in text. ONLY make a tool call."""
         resp = await answer_LLM.bind_tools(all_tools, tool_choice=forced).ainvoke(
             [SystemMessage(content=sp)] + msgs[-6:]
         )
         return {"messages": [resp], "iteration_count": itr + 1}
 
+    # FIX B3: condition references "tool_exec" not "tools"
     def tool_condition(state):
         last = state["messages"][-1]
         itr  = state.get("iteration_count", 0)
         if itr >= 3:                                          return "answer_node"
         if isinstance(last, ToolMessage):                     return "answer_node"
-        if isinstance(last, AIMessage) and last.tool_calls:  return "tools"
+        if isinstance(last, AIMessage) and last.tool_calls:  return "tool_exec"
         return "answer_node"
 
     async def answer_node(state):
         msgs     = state["messages"]
         tool_out = next((m.content for m in reversed(msgs) if isinstance(m, ToolMessage)), None)
         user_q   = next((m.content for m in reversed(msgs) if isinstance(m, HumanMessage)), "")
+        # FIX B2: tool_out from MCP comes as list of dicts — parse to plain string
+        if isinstance(tool_out, list):
+            tool_out = "\n".join(
+                item.get("text", "") for item in tool_out if item.get("type") == "text"
+            ).strip()
         sp = """You are a helpful AI assistant. Follow these rules strictly:
 
 LANGUAGE:
@@ -238,7 +248,6 @@ TOOL RESULT:
 - Do not repeat the raw tool output word for word"""
         if tool_out:
             sp += f"\n\nTool result:\n{tool_out}"
-        # Last 10 messages pass karo — conversation history ke liye
         history = [m for m in msgs[-10:] if not isinstance(m, ToolMessage)]
         resp = await answer_LLM.ainvoke([SystemMessage(content=sp)] + history)
         return {"messages": [resp]}
@@ -246,12 +255,12 @@ TOOL RESULT:
     g = StateGraph(State)
     g.add_node("router_node", router_node)
     g.add_node("LLM_Tool",    LLM_Tool)
-    g.add_node("tools",       tool_node)
+    g.add_node("tool_exec",   tool_exec)   # FIX B3: node name "tool_exec"
     g.add_node("answer_node", answer_node)
     g.add_edge(START, "router_node")
     g.add_conditional_edges("router_node", route_condition, {"LLM_Tool": "LLM_Tool", "answer_node": "answer_node"})
-    g.add_conditional_edges("LLM_Tool",    tool_condition,  {"tools": "tools",       "answer_node": "answer_node"})
-    g.add_edge("tools",       "answer_node")
+    g.add_conditional_edges("LLM_Tool",    tool_condition,  {"tool_exec": "tool_exec", "answer_node": "answer_node"})
+    g.add_edge("tool_exec",   "answer_node")
     g.add_edge("answer_node", END)
 
     from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
