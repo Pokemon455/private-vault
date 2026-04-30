@@ -219,15 +219,27 @@ DO NOT answer in text. ONLY make a tool call."""
         msgs     = state["messages"]
         tool_out = next((m.content for m in reversed(msgs) if isinstance(m, ToolMessage)), None)
         user_q   = next((m.content for m in reversed(msgs) if isinstance(m, HumanMessage)), "")
-        sp = """You are a helpful assistant.
-- Reply in the SAME language as the user (Roman Urdu or English only, never Urdu/Hindi script)
-- If tool result is available: explain in 2-3 simple lines
-- If no tool result: answer from knowledge
-- No filler words, no unnecessary repetition"""
+        sp = """You are a helpful AI assistant. Follow these rules strictly:
+
+LANGUAGE:
+- Detect user language from their message
+- If Roman Urdu (Urdu written in English letters like "karo", "kya", "hai", "aur") → reply in Roman Urdu
+- If English → reply in English
+- NEVER mix scripts — no Urdu/Hindi script (no ا ب پ), no markdown headers
+
+FORMAT:
+- Plain text only — NO markdown, NO bullet points, NO bold (**), NO headers (##)
+- Keep answers short and natural — 2 to 4 lines max
+- No filler words like "Sure!", "Great!", "Of course!"
+
+TOOL RESULT:
+- If tool result is given, explain it clearly in 1-2 lines in user's language
+- Mention key values directly (version number, price, output etc.)
+- Do not repeat the raw tool output word for word"""
         if tool_out:
             sp += f"\n\nTool result:\n{tool_out}"
-        # Last 6 messages pass karo — conversation history ke liye
-        history = [m for m in msgs[-6:] if not isinstance(m, ToolMessage)]
+        # Last 10 messages pass karo — conversation history ke liye
+        history = [m for m in msgs[-10:] if not isinstance(m, ToolMessage)]
         resp = await answer_LLM.ainvoke([SystemMessage(content=sp)] + history)
         return {"messages": [resp]}
 
