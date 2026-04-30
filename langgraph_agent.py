@@ -17,24 +17,25 @@ from html.parser import HTMLParser
 from concurrent.futures import ThreadPoolExecutor
 import asyncio, os, requests
 import nest_asyncio
+import config
+
 nest_asyncio.apply()
 
-# ── Environment ───────────────────────────────────────────────────────────────
-os.environ["LANGCHAIN_PROJECT"]    = "my project"
-os.environ["LANGCHAIN_API_KEY"]    = "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"
-os.environ["LANGCHAIN_TRACING_V2"] = "true"
-os.environ["PINECONE_API_KEY"]     = "pcsk_7FpWKy_7UCkESDmyDDzzYEE2gHmP5bQDYfxXqV3NH9LuAaK2csFwNPioFMAcw5RpPz2PHa"
+# ── Validate environment on startup ──────────────────────────────────────────
+config.validate()
 
-_BASE  = "https://integrate.api.nvidia.com/v1"
-_KEY   = "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"
-_MODEL = "openai/gpt-oss-20b"
+# ── Environment (LangSmith tracing) ──────────────────────────────────────────
+os.environ["LANGCHAIN_PROJECT"]    = config.LANGCHAIN_PROJECT
+os.environ["LANGCHAIN_API_KEY"]    = config.LANGCHAIN_API_KEY or ""
+os.environ["LANGCHAIN_TRACING_V2"] = config.LANGCHAIN_TRACING
 
 # ── LLMs ─────────────────────────────────────────────────────────────────────
-answer_LLM = ChatOpenAI(base_url=_BASE, api_key=_KEY, model=_MODEL)
-router_LLM = ChatOpenAI(base_url=_BASE, api_key=_KEY, model=_MODEL, temperature=0)
+answer_LLM = ChatOpenAI(base_url=config.NVIDIA_BASE_URL, api_key=config.NVIDIA_API_KEY, model=config.NVIDIA_MODEL)
+router_LLM = ChatOpenAI(base_url=config.NVIDIA_BASE_URL, api_key=config.NVIDIA_API_KEY, model=config.NVIDIA_MODEL, temperature=0)
 
 # ── Embeddings ────────────────────────────────────────────────────────────────
 class MockEmbeddings(Embeddings):
+    """Placeholder embeddings — swap with a real model for production RAG."""
     def embed_documents(self, texts): return [[0.1] * 1024 for _ in texts]
     def embed_query(self, text):      return [0.1] * 1024
 
@@ -54,133 +55,158 @@ class State(TypedDict):
 
 # ── Router Prompt ─────────────────────────────────────────────────────────────
 ROUTER_PROMPT = """You are a routing assistant. Classify the query into one of:
-- python_tool : code, python, packages, install, pip, version, environment, libraries, frameworks, "karo", "check karo", "chalao"
-- rag         : user asking about uploaded file content. Keywords: "document", "file", "PDF", "report", "meri report", "is file mein", "uploaded", "mera data", "sheet", "spreadsheet"
-- web_search  : news, weather, latest/newest/current/recent/today/aaj, real-time info, release dates, "kab release hoga", "kab aayega", price, stock
+- python_tool : code, python, packages, install, pip, version, environment, libraries, "karo", "check karo", "chalao"
+- rag         : user asking about uploaded file content — "document", "file", "PDF", "report", "uploaded", "mera data"
+- web_search  : news, weather, latest/newest/current/recent/today, real-time info, price, stock, "kab release hoga"
 - direct      : general knowledge, definitions, greetings, simple questions (no code, no file, no real-time)
 
 Rules:
-- Any technical/code intent                              → python_tool
-- "latest", "newest", "current", "kab release hoga"     → web_search
-- ANY mention of "report", "file", "document", "PDF"    → rag
-- Doubt between python_tool vs direct                   → python_tool
+- Any technical/code intent                          → python_tool
+- "latest", "newest", "current", "kab release hoga" → web_search
+- ANY mention of file/document/PDF                   → rag
+- Doubt between python_tool vs direct                → python_tool
 """
 
 # ── Document Loader ───────────────────────────────────────────────────────────
-# FIX B4: bm25_retriever module-level dict instead of bare global — thread-safe & no global keyword needed
-_retriever_store = {"bm25": None}
+_retriever_store: dict = {"bm25": None}   # dict instead of bare global — thread-safe
 
 def load_document(file_path: str) -> str:
+    """Load and index a document (PDF/CSV/TXT/DOCX) into Pinecone + BM25."""
     loaders = {".pdf": PyPDFLoader, ".csv": CSVLoader, ".docx": Docx2txtLoader}
-    ext = os.path.splitext(file_path)[1]
+    ext = os.path.splitext(file_path)[1].lower()
     if not os.path.exists(file_path):
         return "Error: File not found."
-    if ext == ".txt":
-        loader = TextLoader(file_path, encoding="utf-8")
-    elif ext in loaders:
-        loader = loaders[ext](file_path)
-    else:
-        return "Error: Unsupported file format."
+    loader = TextLoader(file_path, encoding="utf-8") if ext == ".txt" else loaders.get(ext)
+    if loader is None:
+        return "Error: Unsupported format. Supported: .pdf .csv .txt .docx"
+    if ext != ".txt":
+        loader = loader(file_path)
     docs = loader.load()
     if not docs:
         return "Warning: File is empty."
-    chunks = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100).split_documents(docs)
-    retriever        = BM25Retriever.from_documents(chunks)
-    retriever.k      = 2
-    _retriever_store["bm25"] = retriever  # FIX B4: store in dict, no global
-    PineconeVectorStore.from_documents(chunks, embedding=embeddings, index_name="vector",
-                                       pinecone_api_key=os.environ["PINECONE_API_KEY"])
-    return f"Document stored. {len(chunks)} chunks."
+    chunks = RecursiveCharacterTextSplitter(
+        chunk_size=config.CHUNK_SIZE, chunk_overlap=config.CHUNK_OVERLAP
+    ).split_documents(docs)
+    retriever   = BM25Retriever.from_documents(chunks)
+    retriever.k = 2
+    _retriever_store["bm25"] = retriever
+    PineconeVectorStore.from_documents(
+        chunks, embedding=embeddings,
+        index_name=config.PINECONE_INDEX,
+        pinecone_api_key=config.PINECONE_API_KEY
+    )
+    return f"Document indexed. {len(chunks)} chunks stored."
 
 # ── RAG Tool ──────────────────────────────────────────────────────────────────
 @tool_decorator
 def RAG(query: str) -> str:
-    """Retrieve information from uploaded documents."""
+    """Retrieve relevant content from previously uploaded documents."""
     try:
-        vs   = PineconeVectorStore(index_name="vector", embedding=embeddings,
-                                   pinecone_api_key=os.environ["PINECONE_API_KEY"])
-        docs = vs.as_retriever(search_type="mmr",
-                               search_kwargs={"k": 5, "fetch_k": 20, "lambda_mult": 0.7}).invoke(query)
+        vs   = PineconeVectorStore(
+            index_name=config.PINECONE_INDEX,
+            embedding=embeddings,
+            pinecone_api_key=config.PINECONE_API_KEY
+        )
+        docs = vs.as_retriever(
+            search_type="mmr",
+            search_kwargs={"k": config.RETRIEVER_K, "fetch_k": config.RETRIEVER_FETCH_K, "lambda_mult": 0.7}
+        ).invoke(query)
         if not docs:
-            return "No relevant documents found."
-        return "".join(f"Source {i+1}: {d.page_content.strip()}\n\n" for i, d in enumerate(docs))
+            return "No relevant content found in uploaded documents."
+        return "".join(f"Source {i+1}:\n{d.page_content.strip()}\n\n" for i, d in enumerate(docs))
     except Exception as e:
-        return f"Error: {e}"
+        return f"RAG error: {e}"
 
 # ── Web Search Tool ───────────────────────────────────────────────────────────
-SKIP_TAGS = {"script", "style", "nav", "footer", "header", "aside", "menu"}
-NAV_KW    = ["Log in","Sign up","Cookie","Subscribe","Newsletter",
-             "Privacy","Terms","Click here","Skip to","Jump to","Edit link"]
+_SKIP_TAGS = {"script", "style", "nav", "footer", "header", "aside", "menu"}
+_NAV_KW    = ["Log in", "Sign up", "Cookie", "Subscribe", "Newsletter",
+              "Privacy", "Terms", "Click here", "Skip to", "Jump to"]
 
-class TextExtractor(HTMLParser):
+class _TextExtractor(HTMLParser):
     def __init__(self):
         super().__init__()
         self.text, self.skip = [], False
-    def handle_starttag(self, tag, attrs): self.skip = tag in SKIP_TAGS
+    def handle_starttag(self, tag, attrs): self.skip = tag in _SKIP_TAGS
     def handle_endtag(self, tag):          self.skip = False
     def handle_data(self, data):
         if not self.skip and data.strip(): self.text.append(data.strip())
 
-def fetch_clean_content(url: str, max_chars: int = 1500):
+def _fetch_clean_content(url: str, max_chars: int = 1500):
     try:
         page = requests.get(url, timeout=6, headers={"User-Agent": "Mozilla/5.0"})
-        if any(w in page.text for w in ["Enable JavaScript","Just a moment","Cloudflare"]):
+        if any(w in page.text for w in ["Enable JavaScript", "Just a moment", "Cloudflare"]):
             return None
-        p = TextExtractor()
+        p = _TextExtractor()
         p.feed(page.text)
         raw       = " ".join(" ".join(p.text).split())
         sentences = [s.strip() for s in raw.split(".") if len(s.strip()) > 50]
-        clean     = [s for s in sentences if not any(k.lower() in s.lower() for k in NAV_KW)]
+        clean     = [s for s in sentences if not any(k.lower() in s.lower() for k in _NAV_KW)]
         result    = ". ".join(clean[:15])[:max_chars]
         return result if len(result) > 100 else None
-    except:
+    except Exception:
         return None
 
-# FIX B5: renamed to search_web to avoid collision with tool name "web_search" in TOOL_MAP
 @tool_decorator
 def search_web(query: str) -> str:
-    """Search the web for current, real-time information."""
+    """Search Google for current, real-time information."""
     try:
         resp = requests.post(
             "https://api.apify.com/v2/acts/apify~google-search-scraper/run-sync-get-dataset-items",
-            params={"token": "apify_api_tSs2UiAGls0kg5v4PSorGGwi1blLJa3xTdmr"},
+            params={"token": config.APIFY_TOKEN},
             json={"queries": query, "maxPagesPerQuery": 1, "resultsPerPage": 8,
                   "languageCode": "en", "countryCode": "us"},
             timeout=60
         )
-        organic  = resp.json()[0].get("organicResults", [])
-        if not organic: return "No results found."
+        organic = resp.json()[0].get("organicResults", [])
+        if not organic:
+            return "No search results found."
         filtered = [r for r in organic if not any(
-            s in r.get("url","") for s in ["youtube.com","reddit.com","twitter.com"])][:5]
+            s in r.get("url", "") for s in ["youtube.com", "reddit.com", "twitter.com"]
+        )][:5]
         contents = list(ThreadPoolExecutor(3).map(
-            fetch_clean_content, [r.get("url","") for r in filtered[:3]]))
-        out = f"Search: '{query}'\n" + "="*50 + "\n\n"
+            _fetch_clean_content, [r.get("url", "") for r in filtered[:3]]
+        ))
+        out = f"Search: '{query}'\n" + "=" * 50 + "\n\n"
         for i, r in enumerate(filtered):
-            out += f"[{i+1}] {r.get('title','')}\n"
-            out += f"Snippet: {r.get('description','').replace('Read more','').strip()}\n"
-            if i < 3 and contents[i]: out += f"Content: {contents[i]}\n"
-            out += "\n" + "-"*45 + "\n\n"
+            out += f"[{i+1}] {r.get('title', '')}\n"
+            out += f"Snippet: {r.get('description', '').replace('Read more', '').strip()}\n"
+            if i < 3 and contents[i]:
+                out += f"Content: {contents[i]}\n"
+            out += "\n" + "-" * 45 + "\n\n"
         return out
     except Exception as e:
         return f"Search error: {e}"
 
 # ── MCP Client ────────────────────────────────────────────────────────────────
-client = MultiServerMCPClient({
-    "python_tool": {"transport": "streamable-http", "url": "https://deploy-9ugq.onrender.com/mcp"}
+_mcp_client = MultiServerMCPClient({
+    "python_tool": {"transport": "streamable-http", "url": config.MCP_SERVER_URL}
 })
 
-# ── Graph ─────────────────────────────────────────────────────────────────────
-# FIX B5: updated TOOL_MAP to use new function name search_web
-TOOL_MAP = {"python_tool": "run_python", "rag": "RAG", "web_search": "search_web"}
-DB_URL   = "postgresql://neondb_owner:npg_2ZoGDQfIRm5c@ep-falling-wind-an7m70j5-pooler.c-6.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
+# ── Tool routing map ──────────────────────────────────────────────────────────
+_TOOL_MAP = {
+    "python_tool": "run_python",
+    "rag":         "RAG",
+    "web_search":  "search_web",
+}
 
+# ── Main agent ────────────────────────────────────────────────────────────────
 async def build_and_run(query: str, thread_id: str = "1") -> str:
-    mcp_tools  = await asyncio.wait_for(client.get_tools(), timeout=30)
+    """
+    Run the LangGraph multi-agent chatbot.
+
+    Args:
+        query:     User input string.
+        thread_id: Conversation ID — same ID = same memory thread.
+
+    Returns:
+        Agent response as a plain string.
+    """
+    mcp_tools = await asyncio.wait_for(_mcp_client.get_tools(), timeout=30)
     all_tools  = [RAG, search_web, *mcp_tools]
-    # FIX B3: renamed node variable from "tools" to "tool_exec" to avoid UnboundLocalError
     tool_exec  = ToolNode(all_tools)
 
-    async def router_node(state):
+    # ── Nodes ──────────────────────────────────────────────────────────────
+    async def router_node(state: State):
         try:
             r = await router_LLM.with_structured_output(RouterDecision).ainvoke([
                 SystemMessage(content=ROUTER_PROMPT + f"\nfile_uploaded={state.get('file_uploaded', False)}"),
@@ -190,81 +216,80 @@ async def build_and_run(query: str, thread_id: str = "1") -> str:
         except Exception as e:
             return {"router_decision": "direct", "reasoning": str(e)}
 
-    def route_condition(state):
-        return "LLM_Tool" if state["router_decision"] in TOOL_MAP else "answer_node"
-
-    async def LLM_Tool(state):
-        msgs  = state["messages"]
-        dec   = state.get("router_decision")
-        itr   = state.get("iteration_count", 0)
+    async def llm_tool_node(state: State):
+        msgs   = state["messages"]
+        dec    = state.get("router_decision")
+        itr    = state.get("iteration_count", 0)
         if isinstance(msgs[-1], ToolMessage):
             return {"messages": [], "iteration_count": itr}
-        forced = TOOL_MAP.get(dec)
-        sp = f"""You are an AI assistant. Decision: {dec}.
-STRICTLY call the tool: {forced}
-- python_tool → run_python : write complete python code with print()
-- rag         → RAG        : pass user question exactly
-- web_search  → search_web : pass user question exactly
-DO NOT answer in text. ONLY make a tool call."""
+        forced = _TOOL_MAP.get(dec)
+        sp = f"""You are an AI assistant. Routing decision: {dec}.
+You MUST call the tool: {forced}
+- run_python  → write complete Python code using print() for output
+- RAG         → pass the user question exactly as-is
+- search_web  → pass the user question exactly as-is
+Do NOT reply with text. Only make a tool call."""
         resp = await answer_LLM.bind_tools(all_tools, tool_choice=forced).ainvoke(
             [SystemMessage(content=sp)] + msgs[-6:]
         )
         return {"messages": [resp], "iteration_count": itr + 1}
 
-    # FIX B3: condition references "tool_exec" not "tools"
-    def tool_condition(state):
-        last = state["messages"][-1]
-        itr  = state.get("iteration_count", 0)
-        if itr >= 3:                                          return "answer_node"
-        if isinstance(last, ToolMessage):                     return "answer_node"
-        if isinstance(last, AIMessage) and last.tool_calls:  return "tool_exec"
-        return "answer_node"
-
-    async def answer_node(state):
+    async def answer_node(state: State):
         msgs     = state["messages"]
         tool_out = next((m.content for m in reversed(msgs) if isinstance(m, ToolMessage)), None)
-        user_q   = next((m.content for m in reversed(msgs) if isinstance(m, HumanMessage)), "")
-        # FIX B2: tool_out from MCP comes as list of dicts — parse to plain string
+        # MCP tool output comes as list[dict] — parse to plain string
         if isinstance(tool_out, list):
             tool_out = "\n".join(
                 item.get("text", "") for item in tool_out if item.get("type") == "text"
             ).strip()
-        sp = """You are a helpful AI assistant. Follow these rules strictly:
+        sp = """You are a helpful AI assistant. Rules:
 
 LANGUAGE:
-- Detect user language from their message
-- If Roman Urdu (Urdu written in English letters like "karo", "kya", "hai", "aur") → reply in Roman Urdu
-- If English → reply in English
-- NEVER mix scripts — no Urdu/Hindi script (no ا ب پ), no markdown headers
+- Roman Urdu query → reply in Roman Urdu
+- English query → reply in English
+- Never use Urdu/Hindi script (no ا ب پ)
 
 FORMAT:
-- Plain text only — NO markdown, NO bullet points, NO bold (**), NO headers (##)
-- Keep answers short and natural — 2 to 4 lines max
-- No filler words like "Sure!", "Great!", "Of course!"
+- Plain text only — no markdown, no bullet points, no bold, no headers
+- Short and natural — 2 to 4 lines max
+- No filler phrases like "Sure!", "Great!", "Of course!"
 
 TOOL RESULT:
-- If tool result is given, explain it clearly in 1-2 lines in user's language
-- Mention key values directly (version number, price, output etc.)
-- Do not repeat the raw tool output word for word"""
+- If a tool result is provided, explain it clearly in 1-2 lines
+- State key values directly (version number, sum, price, etc.)
+- Do not repeat the raw tool output verbatim"""
         if tool_out:
             sp += f"\n\nTool result:\n{tool_out}"
         history = [m for m in msgs[-10:] if not isinstance(m, ToolMessage)]
         resp = await answer_LLM.ainvoke([SystemMessage(content=sp)] + history)
         return {"messages": [resp]}
 
+    # ── Conditions ─────────────────────────────────────────────────────────
+    def route_condition(state: State):
+        return "llm_tool_node" if state["router_decision"] in _TOOL_MAP else "answer_node"
+
+    def tool_condition(state: State):
+        last = state["messages"][-1]
+        itr  = state.get("iteration_count", 0)
+        if itr >= config.MAX_ITERATIONS:                      return "answer_node"
+        if isinstance(last, ToolMessage):                     return "answer_node"
+        if isinstance(last, AIMessage) and last.tool_calls:  return "tool_exec"
+        return "answer_node"
+
+    # ── Graph ───────────────────────────────────────────────────────────────
     g = StateGraph(State)
-    g.add_node("router_node", router_node)
-    g.add_node("LLM_Tool",    LLM_Tool)
-    g.add_node("tool_exec",   tool_exec)   # FIX B3: node name "tool_exec"
-    g.add_node("answer_node", answer_node)
+    g.add_node("router_node",   router_node)
+    g.add_node("llm_tool_node", llm_tool_node)
+    g.add_node("tool_exec",     tool_exec)
+    g.add_node("answer_node",   answer_node)
     g.add_edge(START, "router_node")
-    g.add_conditional_edges("router_node", route_condition, {"LLM_Tool": "LLM_Tool", "answer_node": "answer_node"})
-    g.add_conditional_edges("LLM_Tool",    tool_condition,  {"tool_exec": "tool_exec", "answer_node": "answer_node"})
+    g.add_conditional_edges("router_node",   route_condition, {"llm_tool_node": "llm_tool_node", "answer_node": "answer_node"})
+    g.add_conditional_edges("llm_tool_node", tool_condition,  {"tool_exec": "tool_exec",         "answer_node": "answer_node"})
     g.add_edge("tool_exec",   "answer_node")
     g.add_edge("answer_node", END)
 
     from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-    async with AsyncPostgresSaver.from_conn_string(DB_URL) as cp:
+    async with AsyncPostgresSaver.from_conn_string(config.DATABASE_URL) as cp:
         await cp.setup()
         bot = g.compile(checkpointer=cp)
         res = await bot.ainvoke(
